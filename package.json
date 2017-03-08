@@ -1,0 +1,37 @@
+{
+  "main": "protal.js",
+  "name": "@tars/rpc",
+  "version": "0.0.1",
+  "description": "",
+  "homepage": "",
+  "author": {
+    "name": "czzou",
+    "email": "czzou@tencent.com",
+    "url": ""
+  },
+  "keywords": [
+    "tars",
+    "tup",
+    "proxy",
+    "server"
+  ],
+  "repository": {
+    "type": "",
+    "url": ""
+  },
+  "contributors": [
+    {
+      "name": "",
+      "email": "",
+      "url": ""
+    }
+  ],
+  "dependencies": {
+    "@tars/dyeing": "latest",
+    "@tars/monitor": "latest",
+    "@tars/registry": "^1.0.0",
+    "@tars/utils": "^1.0.0",
+    "@tars/stream": "^1.0.0"
+  },
+  "readmeFilename": "README.md"
+}
