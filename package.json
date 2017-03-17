@@ -2,7 +2,7 @@
   "main": "protal.js",
   "name": "@tars/rpc",
   "version": "0.0.1",
-  "description": "",
+  "description": "tars4nodejs的rpc通信框架",
   "homepage": "",
   "author": {
     "name": "czzou",
