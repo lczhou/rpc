@@ -5,6 +5,7 @@ var assert         = require("assert");
 var TarsMonitor     = require("@tars/monitor");
 var TimeProvider   = require("@tars/utils").timeProvider;
 var TarsError       = require("../util/TarsError.js").TarsError;
+var RpcCallError   = require("../util/RpcCallError.js").RpcCallError;
 var TQueue         = require("../util/TQueue.js").TQueue;
 var TCPTransceiver = require("./Transceiver.js").TCPTransceiver;
 var UDPTransceiver = require("./Transceiver.js").UDPTransceiver;
@@ -24,15 +25,6 @@ var UDPTransceiver = require("./Transceiver.js").UDPTransceiver;
  * @float radio, 超时比例 > 该值则认为超时了 ( 0.1<=radio<=1.0 )
  * @uint32_t tryTimeInterval, 重试时间间隔
  */
-var CheckTimeoutInfo = function ()
-{
-    this.minTimeoutInvoke       = 2;        //计算的最小的超时次数, 默认2次(在checkTimeoutInterval时间内超过了minTimeoutInvoke, 才计算超时)
-    this.checkTimeoutInterval   = 60000;    //统计时间间隔, (默认60s, 不能小于30s)
-    this.frequenceFailInvoke    = 5;        //连续失败次数
-    this.minFrequenceFailTime   = 5;        //
-    this.radio                  = 0.5;      //超时比例 > 该值则认为超时了 (0.1 <= radio <= 1.0)
-    this.tryTimeInterval        = 30000;    //重试时间间隔，单位毫秒
-};
 
 //////////////////////////////////////////////定义接口代理类////////////////////////////////////////////////////////////
 var AdapterProxy = function () {
@@ -44,7 +36,6 @@ var AdapterProxy = function () {
     this._pTimeoutQueueN        = new TQueue();     //当前端口上的未发送调用队列
 
     this._activeStatus          = true;                     //当前端口上的可用状态
-    this._checkTimeoutInfo      = new CheckTimeoutInfo();
     this._nextFinishInvokeTime  = 0;
     this._nextRetryTime         = 0;
     this._frequenceFailTime     = 0;
@@ -127,7 +118,7 @@ AdapterProxy.prototype.doResponse = function ($rspMessage) {
     if ($rspMessage.iResultCode === 0) {
         reqMessage.promise.resolve({request:reqMessage, response:$rspMessage.origin});
     } else {
-        reqMessage.promise.reject ({request:reqMessage, response:$rspMessage.origin, error:{code:$rspMessage.iResultCode, message:$rspMessage.sResultDesc}});
+        reqMessage.promise.reject (new RpcCallError({request:reqMessage, response:$rspMessage.origin, error:{code:$rspMessage.iResultCode, message:$rspMessage.sResultDesc}}));
     }
 };
 
@@ -140,7 +131,7 @@ AdapterProxy.prototype.doTimeout = function ($reqMessage) {
     $reqMessage.clearTimeout();
     $reqMessage.adapter.finishInvoke(TarsError.CLIENT.REQUEST_TIMEOUT, $reqMessage);
 
-    $reqMessage.promise.reject({request:$reqMessage, response:undefined, error:{code:TarsError.CLIENT.REQUEST_TIMEOUT, message:"call remote server timeout(remote server no response)"}});
+    $reqMessage.promise.reject(new RpcCallError({request:$reqMessage, response:undefined, error:{code:TarsError.CLIENT.REQUEST_TIMEOUT, message:"call remote server timeout(remote server no response)"}}));
 };
 
 // 发送积压的数据
@@ -171,13 +162,13 @@ AdapterProxy.prototype._doOneWayEnd = function (reqMessage) {
     reqMessage.clearTimeout();
     //标记一下调用成功，避免触发节点失活策略
     reqMessage.adapter.finishInvoke(0, reqMessage);
-    reqMessage.promise.reject({request:reqMessage, response:undefined, error:{code:reqMessage.iResultCode, message:"one way call do not need response"}});
+    reqMessage.promise.reject(new RpcCallError({request:reqMessage, response:undefined, error:{code:reqMessage.iResultCode, message:"one way call do not need response"}}));
 }
 // 从当前积压队列中再次发送数据时失败，则不再尝试，直接作为异常处理
 AdapterProxy.prototype._doInvokeException = function ($reqMessage) {
     $reqMessage.clearTimeout();
     $reqMessage.adapter.finishInvoke(TarsError.CLIENT.ADAPTER_NOT_FOUND, $reqMessage);
-    $reqMessage.promise.reject({request:$reqMessage, response:undefined, error:{code:TarsError.CLIENT.ADAPTER_NOT_FOUND, message:"call remote server error(send again error)"}});
+    $reqMessage.promise.reject(new RpcCallError({request:$reqMessage, response:undefined, error:{code:TarsError.CLIENT.ADAPTER_NOT_FOUND, message:"call remote server error(send again error)"}}));
 };
 
 AdapterProxy.prototype.invoke = function ($reqMessage) {
@@ -201,7 +192,7 @@ AdapterProxy.prototype.invoke = function ($reqMessage) {
 // 设置当前代理类为无效
 AdapterProxy.prototype._setInactive = function () {
     this._activeStatus  = false;
-    this._nextRetryTime = TimeProvider.nowTimestamp() + this._checkTimeoutInfo.tryTimeInterval;
+    this._nextRetryTime = TimeProvider.nowTimestamp() + this._worker._checkTimeoutInfo.tryTimeInterval;
     this._pTrans.close();
 };
 
@@ -215,7 +206,7 @@ AdapterProxy.prototype.checkActive = function ($bForceConnect) {
 
     //如果是需要强制连接
     if ($bForceConnect) {
-        this._nextRetryTime = nowTime + this._checkTimeoutInfo.tryTimeInterval;
+        this._nextRetryTime = nowTime + this._worker._checkTimeoutInfo.tryTimeInterval;
         if (!this._pTrans.isValid()) {
             this._pTrans.reconnect();
         }
@@ -232,7 +223,7 @@ AdapterProxy.prototype.checkActive = function ($bForceConnect) {
     }
 
     if (!this._activeStatus) {
-        this._nextRetryTime = nowTime + this._checkTimeoutInfo.tryTimeInterval;
+        this._nextRetryTime = nowTime + this._worker._checkTimeoutInfo.tryTimeInterval;
     }
 
     //返回当前AdapterProxy是否可用
@@ -250,7 +241,7 @@ AdapterProxy.prototype._doFinishInvoke = function ($iResultCode) {
             this._frequenceFailInvoke   = 0;
             this._totalInvoke           = 1;
             this._timeoutInvoke         = 0;
-            this._nextFinishInvokeTime  = nowTime + this._checkTimeoutInfo.checkTimeoutInterval;
+            this._nextFinishInvokeTime  = nowTime + this._worker._checkTimeoutInfo.checkTimeoutInterval;
         } else {
             console.info("[TARS][AdapterProxy::finishInvoke(bool), ", this._worker.name, ", " ,this._endpoint.toString(), ", retry fail]");
         }
@@ -263,12 +254,12 @@ AdapterProxy.prototype._doFinishInvoke = function ($iResultCode) {
     if ($iResultCode !== 0) { //调用失败
         this._timeoutInvoke++;
         if (this._frequenceFailInvoke === 0) {
-            this._frequenceFailTime = nowTime + this._checkTimeoutInfo.minFrequenceFailTime;
+            this._frequenceFailTime = nowTime + this._worker._checkTimeoutInfo.minFrequenceFailTime;
         }
         this._frequenceFailInvoke++;
 
         //检查是否到了连续失败次数,且至少在5s以上
-        if (this._frequenceFailInvoke >= this._checkTimeoutInfo.frequenceFailInvoke && nowTime >= this._frequenceFailTime) {
+        if (this._frequenceFailInvoke >= this._worker._checkTimeoutInfo.frequenceFailInvoke && nowTime >= this._frequenceFailTime) {
             this._setInactive();
         }
     } else { //调用成功
@@ -277,8 +268,8 @@ AdapterProxy.prototype._doFinishInvoke = function ($iResultCode) {
 
     //判断一段时间内的超时比例
     if (nowTime > this._nextFinishInvokeTime) {
-        this._nextFinishInvokeTime = nowTime + this._checkTimeoutInfo.checkTimeoutInterval;
-        if ($iResultCode !== 0 && this._timeoutInvoke >= this._checkTimeoutInfo.minTimeoutInvoke && this._timeoutInvoke >= parseInt(this._checkTimeoutInfo.radio * this._totalInvoke)) {
+        this._nextFinishInvokeTime = nowTime + this._worker._checkTimeoutInfo.checkTimeoutInterval;
+        if ($iResultCode !== 0 && this._timeoutInvoke >= this._worker._checkTimeoutInfo.minTimeoutInvoke && this._timeoutInvoke >= parseInt(this._worker._checkTimeoutInfo.radio * this._totalInvoke)) {
             this._setInactive();
         } else {
             this._totalInvoke   = 0;
@@ -289,8 +280,20 @@ AdapterProxy.prototype._doFinishInvoke = function ($iResultCode) {
 
 AdapterProxy.prototype.finishInvoke = function ($iResultCode, $reqMessage) {
     $reqMessage = $reqMessage || {};
-    this._doFinishInvoke($iResultCode);
-
+    //若在node-agent中运行时，若设置了调用完毕消息同步，将调用完成的消息在各工作进程间同步
+    if(this._worker._bSyncInvokeFinish){
+        process.send({
+            cmd         : "process.msg:all",
+            event       : "finishInvoke",
+            objname     : this._worker._objname,
+            setname     : this._worker._setname,
+            endpoint    : this._endpoint,
+            iResultCode : $iResultCode
+        });
+    }
+    else{
+        this._doFinishInvoke($iResultCode);
+    }
     var packetType = 0;
     if($reqMessage.request.property && $reqMessage.request.property.packetType === 1)
         packetType = 1;

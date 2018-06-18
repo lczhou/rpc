@@ -56,7 +56,7 @@ HeroServer.prototype.addServant = function ($ServantHandle, $ServantName) {
 //启动服务
 HeroServer.prototype.start = function (option) { //option的类型为：BindAdapterOption
     option && this._addBindAdapter(option);
-    this._waitForShutdown();
+    return this._waitForShutdown();
 };
 
 //停止服务
@@ -109,12 +109,26 @@ HeroServer.prototype._addBindAdapter = function ($options) {
 };
 
 HeroServer.prototype._waitForShutdown = function () {
+    var initializePromiseArray = [];
     for (var i = 0, len = this._adapters.length; i < len; i++) {
-        var adapter = this._adapters[i];
-        adapter.handleImp = new this._servants[adapter.servantName]();
-        adapter.handleImp.application = this;
-        adapter.handleImp.initialize();
-        adapter.start();
+        //判断handleImp的initialize方法是否返回promise对象，支持server启动前的准备工作
+        (function (){
+            var adapter = this._adapters[i];
+            adapter.handleImp = new this._servants[adapter.servantName]();
+            adapter.handleImp.application = this;
+            var promise = adapter.handleImp.initialize();
+            if(promise && typeof promise.then == "function"){
+                initializePromiseArray.push(promise.then(function (data) {
+                    adapter.start();
+                    return data;
+                }));
+            } else {
+                adapter.start();
+            }
+        }).call(this);
+    }
+    if(initializePromiseArray.length > 0){
+        return Promise.all(initializePromiseArray);
     }
 };
 
@@ -133,7 +147,7 @@ SimpleServer.prototype.start = function ($options) {
     svroption.handleImp     = $options.handleImp?$options.handleImp:this._handleImp;
 
     process.env.TARS_CONFIG && this._server._initializeClient(process.env.TARS_CONFIG);
-    this._server.start(svroption);
+    return this._server.start(svroption);
 };
 
 SimpleServer.prototype.stop = function () {

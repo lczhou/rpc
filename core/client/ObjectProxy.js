@@ -4,20 +4,33 @@
 var Promise         = require("@tars/utils").Promise;
 var Protocol        = require("../rpc-tars").client;
 var TarsError        = require("../util/TarsError.js").TarsError;
+var RpcCallError   = require("../util/RpcCallError.js").RpcCallError;
 var TQueue          = require("../util/TQueue.js").TQueue;
 var EndpointManager = require("./EndpointManager.js").EndpointManager;
 var ReqMessage      = require("./ReqMessage.js").ReqMessage;
 
+var CheckTimeoutInfo = function ()
+{
+    this.minTimeoutInvoke       = 2;        //计算的最小的超时次数, 默认2次(在checkTimeoutInterval时间内超过了minTimeoutInvoke, 才计算超时)
+    this.checkTimeoutInterval   = 60000;    //统计时间间隔, (默认60s, 不能小于30s)
+    this.frequenceFailInvoke    = 5;        //连续失败次数
+    this.minFrequenceFailTime   = 5;        //
+    this.radio                  = 0.5;      //超时比例 > 该值则认为超时了 (0.1 <= radio <= 1.0)
+    this.tryTimeInterval        = 30000;    //重试时间间隔，单位毫秒
+};
+
 ///////////////////////////////////////////////定义调用类///////////////////////////////////////////////////////////////
 var ObjectProxy = function () {
-    this._objname       = "";            //ObjectProxy的名称
-    this._setname       = "";            //使用stringtoProxy时指定的set名称
-    this._pTimeoutQueue = new TQueue();  //全局数据发送队列
-    this._manager       = undefined;     //对端连接管理器
-    this._requestId     = 1;             //当前服务队列的请求ID号
-    this._iTimeout      = 3000;          //默认的调用超时时间
-    this._protocol      = Protocol;      //当前端口上的协议解析器
-    this._comm          = undefined;     //通信器实例
+    this._objname          = "";            //ObjectProxy的名称
+    this._setname          = "";            //使用stringtoProxy时指定的set名称
+    this._pTimeoutQueue    = new TQueue();  //全局数据发送队列
+    this._manager          = undefined;     //对端连接管理器
+    this._requestId        = 1;             //当前服务队列的请求ID号
+    this._iTimeout         = 3000;          //默认的调用超时时间
+    this._protocol         = Protocol;      //当前端口上的协议解析器
+    this._comm             = undefined;     //通信器实例
+    this._bSyncInvokeFinish = false;         //在进程间同步调用完成的消息，在流量较小的时候加快触发屏蔽逻辑
+    this._checkTimeoutInfo  = new CheckTimeoutInfo();
 };
 module.exports.ObjectProxy = ObjectProxy;
 
@@ -35,8 +48,8 @@ ObjectProxy.prototype.__defineGetter__("pTimeoutQueue", function () { return thi
 ObjectProxy.prototype.__defineSetter__("pTimeoutQueue", function (value) { this._pTimeoutQueue = value; });
 
 //初始化ObjectProxy
-ObjectProxy.prototype.initialize = function ($ObjName, $SetName) {
-    this._manager = new EndpointManager(this, this._comm, $ObjName, $SetName);
+ObjectProxy.prototype.initialize = function ($ObjName, $SetName, options) {
+    this._manager = new EndpointManager(this, this._comm, $ObjName, $SetName, options);
     this._objname = this._manager._objname;
     this._setname = $SetName;
 };
@@ -48,6 +61,10 @@ ObjectProxy.prototype.setProtocol = function ($protocol) {
 ObjectProxy.prototype.genRequestId = function () {
     return ++this._requestId;
 };
+
+ObjectProxy.prototype.setCheckTimeoutInfo = function (checkTimeoutInfo) {
+    Object.assign(this._checkTimeoutInfo, checkTimeoutInfo);
+}
 
 //当重新连接或者第一次连接上服务端时，传输类回调当前函数
 ObjectProxy.prototype.doInvoke = function () {
@@ -72,12 +89,12 @@ ObjectProxy.prototype.doTimeout = function($reqMessage) {
     this._pTimeoutQueue.erase($reqMessage.request.iRequestId);
 
     $reqMessage.clearTimeout();
-    $reqMessage.promise.reject({request:$reqMessage, response:undefined, error:{code:TarsError.CLIENT.REQUEST_TIMEOUT, message:"call remote server timeout(no adapter selected)"}});
+    $reqMessage.promise.reject(new RpcCallError({request:$reqMessage, response:undefined, error:{code:TarsError.CLIENT.REQUEST_TIMEOUT, message:"call remote server timeout(no adapter selected)"}}));
 };
 
 ObjectProxy.prototype.doInvokeException = function ($reqMessage) {
     $reqMessage.clearTimeout();
-    $reqMessage.promise.reject({request:$reqMessage, response:undefined, error:{code:TarsError.SERVER.TARSADAPTERNULL, message:"select AdapterProxy is null"}});
+    $reqMessage.promise.reject(new RpcCallError({request:$reqMessage, response:undefined, error:{code:TarsError.SERVER.TARSADAPTERNULL, message:"select AdapterProxy is null"}}));
 };
 
 ObjectProxy.prototype.invoke = function($reqMessage) {
@@ -101,18 +118,22 @@ ObjectProxy.prototype.invoke = function($reqMessage) {
 ObjectProxy.prototype.tars_invoke = function ($FuncName, $BinBuffer, $Property) {
     //判断最后一个参数，是否是属性结构体
     var extProperty = {};
-    if ($Property && $Property.hasOwnProperty("dyeing")) {
-        extProperty.dyeing  = $Property.dyeing;
-    }
-    if ($Property && $Property.hasOwnProperty("context")) {
-        extProperty.context = $Property.context;
-    }
-    if ($Property && $Property.hasOwnProperty("packetType")) {
-        extProperty.packetType = $Property.packetType;
-    }
-
-    if ($Property && $Property.hasOwnProperty("hashCode")) {
-        extProperty.hashCode = $Property.hashCode;
+    if (typeof $Property === 'object' && $Property !== null) {
+        if ($Property.hasOwnProperty("dyeing")) {
+            extProperty.dyeing  = $Property.dyeing;
+        }
+        if ($Property.hasOwnProperty("context")) {
+            extProperty.context = $Property.context;
+        }
+        if ($Property.hasOwnProperty("packetType")) {
+            extProperty.packetType = $Property.packetType;
+        }
+        if ($Property.hasOwnProperty("hashCode")) {
+            extProperty.hashCode = $Property.hashCode;
+        }
+        if ($Property.hasOwnProperty("consistentHash")) {
+            extProperty.consistentHash = $Property.consistentHash;
+        }
     }
 
     //构造请求
@@ -128,6 +149,28 @@ ObjectProxy.prototype.tars_invoke = function ($FuncName, $BinBuffer, $Property) 
     reqMessage.setTimeout(this._iTimeout);
     return this.invoke(reqMessage);
 };
+
+ObjectProxy.prototype.setSyncInvokeFinish = function(bSync){
+    var self = this;
+    //不在node-agent中运行，单进程运行，无需设置同步
+    if(!process.send) {
+        self._bSyncInvokeFinish = false;
+        return;
+    }
+    if(!self.OnFinishInvoke){
+        self.OnFinishInvoke = function(msg){
+            if(!msg || !msg.event || msg.event!=="finishInvoke") return;
+            if(msg.objname !== self._objname || msg.setname !== self._setname) return;
+            self._manager.doFinishInvoke(msg.endpoint, msg.iResultCode);
+        }
+    }
+    if(bSync) {
+        process.on("message",this.OnFinishInvoke)
+    } else {
+        process.removeListener("message",this.OnFinishInvoke);
+    }
+    this._bSyncInvokeFinish = bSync;
+}
 
 ObjectProxy.prototype.destroy = function () {
     this._manager.destroy();

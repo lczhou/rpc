@@ -5,11 +5,13 @@ var EventEmitter = require("events").EventEmitter;
 var util         = require("util");
 var TarsStream          = require("@tars/stream");
 var TarsPacket    = require("./RequestF.js").tars;
+var CreateNodeBuffer = require("./CreateNodeBuffer");
 
 var stream = function () {
     EventEmitter.call(this);
-    this._name = "tars";
-    this._data = undefined;
+    this._name      = "tars";
+    this._data = [];
+    this._bufferLength = 0;
 }
 util.inherits(stream, EventEmitter);
 
@@ -74,42 +76,55 @@ var ProtoMessageResponse = function () {
 }
 
 stream.prototype.feed = function (data) {
-    var BinBuffer = data;
-    if (this._data != undefined) {
-        var temp = new Buffer(this._data.length + data.length);
-        this._data.copy(temp, 0);
-        data.copy(temp, this._data.length);
-        this._data = undefined;
-        BinBuffer = temp;
+    if (this._bufferLength < 4 && this._data.length > 0) {
+        this._data[0] = Buffer.concat([this._data[0], data]);
+    } else {
+        this._data.push(data);
     }
+    this._bufferLength += data.length;
 
-    for (var pos = 0; pos < BinBuffer.length; ) {
-        if (BinBuffer.length - pos < 4) {
-            break;
+    if (this._bufferLength > 4) {
+        var Length = this._data[0].readUInt32BE(0);
+        //确保了一个完整的tars数据包
+        if (Length <= this._bufferLength) {
+            var BinBuffer = Buffer.concat(this._data, this._bufferLength)
+            for (var pos = 0; pos < BinBuffer.length; ) {
+
+                var is      = new TarsStream.InputStream(new TarsStream.BinBuffer(BinBuffer.slice(pos + 4, pos + Length)));
+                var message = new ProtoMessageResponse();
+                message.origin      = TarsPacket.ResponsePacket._readFrom(is);
+                message.iRequestId  = message.origin.iRequestId;
+                message.iResultCode = message.origin.iRet;
+                message.sResultDesc = message.origin.sResultDesc;
+
+                this.emit("message", message);
+                pos += Length;
+
+                //开始尝试第二个tars数据包的读取
+                if (BinBuffer.length - pos < 4) {
+                    break;
+                }
+                Length = BinBuffer.readUInt32BE(pos);
+                if (pos + Length > BinBuffer.length) {
+                    break;
+                }
+            }
+
+            if (pos != BinBuffer.length) {
+                var tmp = CreateNodeBuffer(BinBuffer.length - pos);
+                BinBuffer.copy(tmp, 0, pos);
+                this._data = [tmp];
+                this._bufferLength = tmp.length;
+            } else {
+                this._data = [];
+                this._bufferLength = 0;
+            }
         }
-        var Length = BinBuffer.readUInt32BE(pos);
-        if (pos + Length > BinBuffer.length) {
-            break;
-        }
-
-        var is      = new TarsStream.InputStream(new TarsStream.BinBuffer(BinBuffer.slice(pos + 4, pos + Length)));
-        var message = new ProtoMessageResponse();
-        message.origin      = TarsPacket.ResponsePacket._readFrom(is);
-        message.iRequestId  = message.origin.iRequestId;
-        message.iResultCode = message.origin.iRet;
-        message.sResultDesc = message.origin.sResultDesc;
-
-        this.emit("message", message);
-        pos += Length;
-    }
-
-    if (pos != BinBuffer.length) {
-        this._data = new Buffer(BinBuffer.length - pos);
-        BinBuffer.copy(this._data, 0, pos);
     }
 }
 
 stream.prototype.reset = function () {
     delete this._data;
-    this._data = undefined;
+    this._data = [];
+    this._bufferLength = 0;
 }

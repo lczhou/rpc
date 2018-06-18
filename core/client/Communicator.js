@@ -126,7 +126,7 @@ Communicator.prototype._initProperty = function () {
 };
 
 //生成ObjectProxy类实例
-Communicator.prototype._createObjectProxy = function ($ObjectName, $SetName) {
+Communicator.prototype._createObjectProxy = function ($ObjectName, $SetName, options) {
     var tmpObjName = $ObjectName + ":" + ($SetName === undefined?"":$SetName);
     if (this._workers.hasOwnProperty(tmpObjName)) {
         return this._workers[tmpObjName];
@@ -139,7 +139,7 @@ Communicator.prototype._createObjectProxy = function ($ObjectName, $SetName) {
     {
         worker.timeout      = timeout;
     }
-    worker.initialize($ObjectName, $SetName);
+    worker.initialize($ObjectName, $SetName, options);
 
     this._workers[tmpObjName] = worker;
 
