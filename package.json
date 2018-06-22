@@ -27,11 +27,11 @@
     }
   ],
   "dependencies": {
-    "@tars/dyeing": "latest",
-    "@tars/monitor": "latest",
-    "@tars/registry": "latest",
-    "@tars/utils": "latest",
-    "@tars/stream": "latest"
+    "@tars/dyeing": "0.0.1",
+    "@tars/monitor": "0.0.1",
+    "@tars/registry": "0.0.1",
+    "@tars/utils": "0.0.1",
+    "@tars/stream": "0.0.1"
   },
   "readmeFilename": "README.md",
   "license" : "BSD-3-Clause"
